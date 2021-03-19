@@ -22,5 +22,5 @@ Limitations
 -----------
 
 - Only recognizes digital inputs
-- Currently, the only game supported is Nemesis/Gradius. Games can easily be added by looking up the necessary data in the MAME drivers and incorporating it in line with the existing Nemesis/Gradius data.
+- Currently, the only games supported are Nemesis/Gradius and Donkey Kong. Games can easily be added by looking up the necessary data in the MAME drivers and incorporating it in line with the existing Nemesis/Gradius data.
 
