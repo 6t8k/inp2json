@@ -14,7 +14,7 @@ parser.add_argument("-i", "--input-file", type=str,
 parser.add_argument("-p", "--check-ports", type=str, default="0,1",
                     help="Comma-separated list of port numbers to check.")
 parser.add_argument("-n", "--ports-count", type=int, default=8,
-                    help="Count of input ports that were recorded in the INP file.")
+                    help="Count of input ports that were recorded in the INP file (default=8).")
 parser.add_argument("-d", "--write-decompressed", action="store_true", default=False,
                     help="If specified, the decompressed INP file is written to the filesystem.")
 args = parser.parse_args()
@@ -81,7 +81,33 @@ BUTTONS = {
             0x20: "BTN2",
             0x40: "BTN3",
         },
-    }
+    },
+    "dkong": {
+        1: {
+            0x01: "RIGHT",
+            0x02: "LEFT",
+            0x04: "UP",
+            0x08: "DOWN",
+            0x10: "BTN1",
+        },
+        2: {
+            0x01: "RIGHT",
+            0x02: "LEFT",
+            0x04: "UP",
+            0x08: "DOWN",
+            0x10: "BTN1",
+        },
+        3: {
+            0x01: "SERVICE",
+            0x02: "UNKNOWN",
+            0x04: "START1",
+            0x08: "START2",
+            0x10: "UNKNOWN",
+            0x20: "UNKNOWN",
+            0x40: "CUSTOM",
+            0x80: "COIN1",
+        },
+    },
 }
 
 BUTTONS_ALIAS = [("gradius", "nemesis"), ]
@@ -91,7 +117,7 @@ for alias, parent in BUTTONS_ALIAS:
 
 def parse_header_and_decompress(args):
     inp_data = None
-    ports_to_check = list(map(int, args.check_ports.split(",")))
+    ports_to_check = [int(x) for x in args.check_ports.split(",")]
 
     with open(args.input_file, "rb") as f:
 
