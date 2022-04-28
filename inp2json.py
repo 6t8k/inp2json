@@ -108,6 +108,33 @@ BUTTONS = {
             0x80: "COIN1",
         },
     },
+    "robotron": {
+       0: {
+            0x01: "UP",
+            0x02: "DOWN",
+            0x04: "LEFT",
+            0x08: "RIGHT",
+            0x10: "START1",
+            0x20: "START2",
+            0x40: "FIREUP",
+            0x40: "FIREDOWN",
+        },
+        1: {
+            0x01: "FIRELEFT",
+            0x02: "FIRERIGHT",
+            0x04: "UNKNOWN",
+        },
+        2: {
+            0x01: "AUTOUP",
+            0x02: "ADVANCE",
+            0x04: "COINT3",
+            0x08: "RESET",
+            0x10: "COIN1",
+            0x20: "COIN2",
+            0x40: "TILT",
+            0x80: "UNKNOWN",
+        },
+    },     
 }
 
 BUTTONS_ALIAS = [("gradius", "nemesis"), ]
