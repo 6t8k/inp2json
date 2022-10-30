@@ -1,4 +1,5 @@
-#!/bin/python3
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 
 import argparse
 from datetime import datetime
@@ -49,14 +50,16 @@ simply copy the button masks here for now:
 """
 BUTTONS = {
     "nemesis": {
-        0: {
+        0: {}, # DSW0
+        1: {}, # DSW1
+        2: { # IN0
             0x01: "COIN1",
             0x02: "COIN2",
             0x04: "SERVICE1",
             0x08: "START1",
             0x10: "START2",
         },
-        1: {
+        3: { #IN1
             0x01: "LEFT",
             0x02: "RIGHT",
             0x04: "UP",
@@ -65,14 +68,7 @@ BUTTONS = {
             0x20: "BTN2",
             0x40: "BTN3",
         },
-        2: {
-            0x01: "COIN1",
-            0x02: "COIN2",
-            0x04: "SERVICE1",
-            0x08: "START1",
-            0x10: "START2",
-        },
-        3: {
+        4: { # IN2
             0x01: "LEFT",
             0x02: "RIGHT",
             0x04: "UP",
@@ -81,23 +77,25 @@ BUTTONS = {
             0x20: "BTN2",
             0x40: "BTN3",
         },
+        5: {}, # TEST
     },
     "dkong": {
-        1: {
+        0: {}, # DSW0
+        1: { #IN0
             0x01: "RIGHT",
             0x02: "LEFT",
             0x04: "UP",
             0x08: "DOWN",
             0x10: "BTN1",
         },
-        2: {
+        2: { #IN1
             0x01: "RIGHT",
             0x02: "LEFT",
             0x04: "UP",
             0x08: "DOWN",
             0x10: "BTN1",
         },
-        3: {
+        3: { #IN2
             0x01: "SERVICE",
             0x02: "UNKNOWN",
             0x04: "START1",
@@ -107,6 +105,9 @@ BUTTONS = {
             0x40: "CUSTOM",
             0x80: "COIN1",
         },
+        4: {}, # SERVICE1
+        5: {}, # VIDHW
+        6: {}, # VR2
     },
     "robotron": {
        0: {
@@ -122,19 +123,19 @@ BUTTONS = {
         1: {
             0x01: "FIRELEFT",
             0x02: "FIRERIGHT",
-            0x04: "UNKNOWN",
+            0xfc: "UNKNOWN",
         },
         2: {
             0x01: "AUTOUP",
             0x02: "ADVANCE",
-            0x04: "COINT3",
+            0x04: "COIN3",
             0x08: "RESET",
             0x10: "COIN1",
             0x20: "COIN2",
             0x40: "TILT",
             0x80: "UNKNOWN",
         },
-    },     
+    },
 }
 
 BUTTONS_ALIAS = [("gradius", "nemesis"), ]
@@ -149,7 +150,7 @@ def parse_header_and_decompress(args):
     with open(args.input_file, "rb") as f:
 
         header_bytes = f.read(HEADER_BYTES)
-        if not header_bytes or not header_bytes[:7] == b"MAMEINP":
+        if not header_bytes or not header_bytes[:8] == b"MAMEINP\0":
             print("Invalid file", file=sys.stderr)
             sys.exit(1)
 
@@ -205,8 +206,8 @@ def read_next_frame_metadata(data):
 
 
 def read_next_frame_inputs(data):
-    ports_def = dict()
-    ports_digital = dict()
+    ports_def = {}
+    ports_digital = {}
 
     for i in range(args.ports_count):
 
@@ -232,12 +233,12 @@ def check_button_inputs(button_inputs_def, button_inputs_digital, game, port_num
             pressed_buttons.append(name)
 
     if pressed_buttons:
-        print(",".join(pressed_buttons))
+        print(f"{port_num}.{','.join(pressed_buttons)}")
     return pressed_buttons
 
 
 def main(args):
-    output = list()
+    output = []
     _, _, sysname, ports_to_check, data = parse_header_and_decompress(args)
     frame_no = 0
 
