@@ -364,15 +364,19 @@ def print_ports(iptprt_ref):
         print(f"{idx} {port_name}")
         for mask, field in fields.items():
             ft = field["type"]
-            sn = f" ({field['specific_name']})" if field["specific_name"] else ""
-            pl = field["player"] + 1
+            sn = f" ({field['specific_name']})" if field.get("specific_name") else ""
+            pl = (
+                f"player {int(field['player']) + 1}, "
+                if field.get("player") is not None
+                else ""
+            )
             ac = (
                 "low"
                 if field["defvalue"] & int(mask, base=10) == int(mask, base=10)
                 else "high"
             )
             an = "analog" if field["analog"] else "nonanalog"
-            print(f"\t{ft}{sn}, player {pl}, active {ac}, {an}")
+            print(f"\t{ft}{sn}, {pl}active {ac}, {an}")
         idx += 1
 
 
