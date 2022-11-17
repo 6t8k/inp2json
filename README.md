@@ -1,29 +1,24 @@
-inp2json
-========
+# inp2json
 
-This is a small Python script that takes an INP file and generates JSON output out of it.
+This is a small Python script that takes a MAME input recording ("INP file") and generates JSON output out of it.
 
 This should make the data easier to read/process further for various purpuses, like a custom input viewer. This can come in handy in situations where such a thing is not available out of the box or does not have the desirable features.
 
-I have tested this with shmupmame 4.2 and current (Wolf)MAME versions. Basically, it should work with anything that records version 3.0 or 3.5 INP files.
-
-All games supported by MAME are supported by inp2json in principle: as more games become supported by MAME, to make inp2json support them as well, the input port reference file must be re-generated ([see here](#generating-the-input-port-reference-file)).
+I have tested this with shmupmame 4.2 and current (Wolf)MAME versions. Basically, it should work with anything that records version 3.0 or 3.5 INP files, but note the [#Limitations](#limitations).
 
 You need Python 3.6 or later, there are no other dependencies.
 
-Basic usage
-----------
+## Basic usage
 
 ```inp2json.py -i PATH_TO_INP_FILE```
 
 The JSON is then written to `PATH_TO_INP_FILE.json`.
 
-`inp2json.py` must be able to read the input port reference file (`mame_inputport_ref.gz`).
+`inp2json.py` must be able to read the input port reference file [(`mame_inputport_ref.gz`)](mame_inputport_ref.gz).
 
-Synopsis
---------
+## Synopsis
 ```
-usage: inp2json.new.py [-h] -i INPUT_FILE_PATH [-p [CHECK_PORTS ...]] [-m INPUTPORT_REF_PATH] [-d] [-l]
+usage: inp2json.py [-h] -i INPUT_FILE_PATH [-p [CHECK_PORTS ...]] [-m INPUTPORT_REF_PATH] [-d] [-l] [-s]
 
 Convert a MAME input file (INP) to JSON text.
 
@@ -39,21 +34,36 @@ options:
                         mame_inputport_ref.gz).
   -d, --write-decompressed
                         If specified, the decompressed INP file is written to the filesystem.
-  -l, --list-ports      If specified, show available input ports for the game given via the INP file (-i/--input-file-path argument),
-                        instead of converting the file.
+  -l, --list-ports      If specified, show assumed input ports for the game given via the INP file (-i/--input-file-path argument), instead
+                        of converting the file.
+  -s, --shmupmame-compat
+                        Compatibility mode intended for INP files that were created using MAME forks ShmupMAME or MAME Plus (maintenance of
+                        which came to a halt years ago). Breaks processing of INP files not created using one of these forks.
 ```
 
-Limitations
------------
+## Limitations
 
-- Only recognizes digital inputs
+### Amendable
 
-Generating the input port reference file
-----------------------------------------
+- Only recognizes digital inputs, but support for analog inputs shouldn't be hard to implement
+- MAME forks MAME Plus and shmupmame (maintenance of which came to a halt years ago) add a concept they call "custom buttons"; the correspondng button inputs are currently ignored by inp2json
 
-1. Clone [https://github.com/6t8k/mame](https://github.com/6t8k/mame) and checkout the `infoxml_augment_inputfield_output` branch:
+### Fundamental
 
-        $ git clone -b infoxml_augment_inputfield_output --single-branch https://github.com/6t8k/mame
+The format of INP files is game-dependent and not self-contained, so in order to do its job, inp2json requires reference data from MAME describing which buttons are defined for which games, broadly speaking. This data is collected using a (semi-)automated process ([see here](#generating-the-input-port-reference-file)), due to which all games supported by MAME are supported by inp2json in principle. As more games become supported by MAME, the input port reference file must be re-generated to make inp2json support them as well.
+
+However, the format in some cases also varies across MAME versions in a way that inp2json will probably never account for out of the box. Most INP files in practical scenarios should be correctly converted out of the box, but depending on the game and MAME version the INP file was created with, there is a non-negligible chance that it may be unsuccessful (the probability raises with the version's age, as a rule of thumb). If this occurs to you, there are still options/ideas (it may not be easy to distinguish from a bug, feel free to file an issue if you'd like me to rule this out):
+
+- check which MAME version your INP file was created with (for this you can simply open it using a text or hex editor) and
+    - which game your INP file is for, then look up the input definitions (e.g. [here](https://github.com/mamedev/mame/blob/mame0249/src/mame/handheld/hh_tms1k.cpp#L14654) for `0.249` and `ssports4`, for which ports have changed in [84395f1](https://github.com/mamedev/mame/commit/84395f11085373b474a8b8a5caafc3f1e38ceb5b)). Revert `inp2json` to commit `5442e48` and manually adjust `BUTTONS` and `--ports-count` accordingly
+    - (OR) obtain a MAME executable of that version and see if you can utilize [MAME's Lua engine](https://docs.mamedev.org/techspecs/luaengine.html) to convert the inputs (the respective game needs to be running for this, at least at the time of writing)
+    - (OR) rebase the [`inp2json` branch](https://github.com/6t8k/mame/tree/inp2json) onto the corresponding tag instead and continue [generating the input port reference file](#generating-the-input-port-reference-file) from there (might be too much of a hassle depending on how far you'd need to go back)
+
+## Generating the input port reference file
+
+1. Clone [https://github.com/6t8k/mame](https://github.com/6t8k/mame) and checkout the `inp2json` branch:
+
+        $ git clone -b inp2json --single-branch https://github.com/6t8k/mame
 
 2. [Build MAME](https://docs.mamedev.org/initialsetup/compilingmame.html)
 
@@ -65,4 +75,4 @@ Generating the input port reference file
 
         $ python filter_convert_mamexml.py -s mameinfo.xml | gzip --best > mame_inputport_ref.gz
 
-To follow new MAME releases, the branch can simply be rebased onto a more recent release tag. I'll propose the source code changes upstream in hopes that this as well as steps 1 and 2 become obsolete.
+To follow new MAME releases, the branch can simply be rebased onto a more recent release tag.

@@ -14,7 +14,21 @@ import logging
 import sys
 import xml
 import xml.etree.ElementTree as ET
-from enum import IntEnum, auto, unique
+from typing import TypedDict
+
+
+class InputFieldDto(TypedDict):
+    analog: bool
+    type: str
+    defvalue: int
+    specific_name: str | None
+    player: int | None
+
+
+class InputPortDto(TypedDict):
+    fields: dict[int, InputFieldDto]
+    legacy_order: int | None
+
 
 LOGLEVEL_DEF = "INFO"
 logger = logging.getLogger(__name__)
@@ -64,9 +78,7 @@ def load_and_parse_xmldoc(
 
 def pick_mame_metadata(
     elem_iter: collections.abc.Iterable[xml.etree.ElementTree.Element],
-) -> tuple[
-    str, str, dict[str, dict[str, dict[int, dict[str, bool | str | int | None]]]]
-]:
+) -> tuple[str, str, dict[str, dict[str, InputPortDto]]]:
     """
     Single out pertinent information from a parsed MAME info XML document.
 
@@ -84,7 +96,7 @@ def pick_mame_metadata(
     mame_config = ""
     machine_name = None
     inputport_tag = None
-    machines: dict[str, dict[str, dict[int, dict[str, bool | str | int | None]]]] = {}
+    machines: dict[str, dict[str, InputPortDto]] = {}
 
     for elem in elem_iter:
         if elem.tag == "mame":
@@ -115,7 +127,12 @@ def pick_mame_metadata(
                         machine_name,
                         inputport_tag,
                     )
-                machines[machine_name][inputport_tag] = {}
+                machines[machine_name][inputport_tag] = {
+                    "fields": {},
+                    "legacy_order": int(elem.get("_alloc_order", ""))
+                    if elem.get("_alloc_order") is not None
+                    else None,
+                }
             else:
                 logger.warning("No input port tag, skipping")
         elif machine_name and inputport_tag and elem.tag in ("nonanalog", "analog"):
@@ -124,7 +141,7 @@ def pick_mame_metadata(
             # files of games that have analog fields can still be traversed
             # correctly (and any digital fields can still be processed).
             if inputfield_mask := int(elem.get("mask", 0)):
-                if machines[machine_name][inputport_tag].get(inputfield_mask):
+                if machines[machine_name][inputport_tag]["fields"].get(inputfield_mask):
                     logger.warning(
                         "Field %s %s %s already seen, overiding existing entry",
                         machine_name,
@@ -132,10 +149,15 @@ def pick_mame_metadata(
                         inputfield_mask,
                     )
                 try:
-                    ioport_type = elem.get("type")
-                    if ioport_type is None:
+                    inputfield_type = elem.get("type")
+                    if inputfield_type is None:
                         raise KeyError
-                    defvalue = int(elem.get("defvalue", ""))
+                    inputfield_defvalue = int(elem.get("defvalue", ""))
+                    inputfield_player = (
+                        int(elem.get("player", ""))
+                        if elem.get("player") is not None
+                        else None
+                    )
                 except (KeyError, ValueError):
                     logger.exception(
                         "Field %s %s %s - missing or abnormal attribute values, skipping",
@@ -144,13 +166,13 @@ def pick_mame_metadata(
                         inputfield_mask,
                     )
                 else:
-                    machines[machine_name][inputport_tag][inputfield_mask] = {
+                    machines[machine_name][inputport_tag]["fields"][inputfield_mask] = {
                         "analog": elem.tag == "analog",
-                        "type": ioport_type,
-                        "defvalue": defvalue,
-                        # the following elements may be absent on the part of MAME:
+                        "type": inputfield_type,
+                        "defvalue": inputfield_defvalue,
+                        # the following attributes may be absent on the part of MAME:
                         "specific_name": elem.get("specific_name"),
-                        "player": elem.get("player"),
+                        "player": inputfield_player,
                     }
             else:
                 logger.warning(

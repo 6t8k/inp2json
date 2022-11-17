@@ -6,6 +6,7 @@ import argparse
 import gzip
 import io
 import json
+import re
 import struct
 import sys
 import zlib
@@ -25,6 +26,10 @@ BASETIME_BYTES = 0x08
 SYSNAME_BYTES = 0x0C
 APPDESC_BYTES = 0x20
 
+# Unlike mainline MAME and ShmupMAME, WolfMAME's appdesc string skips `APPNAME`
+# and starts with the build version.
+APPDESC_RE = re.compile(r"(MAME )?(\d\S*)")
+
 FRAME_STRUCT_FMT = "<LQL"  # seconds, attoseconds, curspeed
 DIGITAL_STRUCT_FMT = "<LL"  # defvalue, digital
 ANALOG_STRUCT_FMT = "<LLL?"  # accum, previous, sensitivity, reverse
@@ -39,6 +44,10 @@ class UnsupportedGameError(Exception):
 
 class InvalidInpHeaderError(Exception):
     """This exception is raised when an INP file header could not be parsed or was detected as invalid."""
+
+
+class UnsupportedMameVersionError(Exception):
+    """This exception is raised when an INP file header indicates an unsupported MAME version."""
 
 
 def parse_args():
@@ -79,10 +88,33 @@ def parse_args():
         "--list-ports",
         action="store_true",
         default=False,
-        help="If specified, show available input ports for the game given via the INP file "
+        help="If specified, show assumed input ports for the game given via the INP file "
         "(-i/--input-file-path argument), instead of converting the file.",
     )
+    parser.add_argument(
+        "-s",
+        "--shmupmame-compat",
+        action="store_true",
+        default=False,
+        help="Compatibility mode intended for INP files that were created using MAME forks "
+        "ShmupMAME or MAME Plus (maintenance of which came to a halt years ago). Breaks "
+        "processing of INP files not created using one of these forks.",
+    )
     return parser.parse_args()
+
+
+def parse_appdesc(appdesc):
+    """
+    Try to parse the appdesc string found within MAME input recordings (INP files).
+
+    Return None if the appdesc string is deemed malformed, else return the MAME
+    build version number (BARE_BUILD_VERSION) contained therein.
+    """
+    match = re.match(APPDESC_RE, appdesc)
+    if match:
+        return match.group(2)
+
+    return None
 
 
 def parse_header(input_file_path):
@@ -111,10 +143,12 @@ def parse_header(input_file_path):
                 )
             )
 
-            ver_maj = int(header_bytes[OFFS_MAJVERSION])
-            ver_min = int(header_bytes[OFFS_MINVERSION])
-            if ver_maj != 3 or ver_min not in (0, 5):
-                raise InvalidInpHeaderError(f"Invalid version: {ver_maj}.{ver_min}")
+            inp_ver_maj = int(header_bytes[OFFS_MAJVERSION])
+            inp_ver_min = int(header_bytes[OFFS_MINVERSION])
+            if inp_ver_maj != 3 or inp_ver_min not in (0, 5):
+                raise InvalidInpHeaderError(
+                    f"Invalid INP version: {inp_ver_maj}.{inp_ver_min}"
+                )
 
             sysname = (
                 header_bytes[OFFS_SYSNAME : OFFS_SYSNAME + SYSNAME_BYTES]
@@ -128,17 +162,27 @@ def parse_header(input_file_path):
                 .decode("ascii")
                 .strip("\0")
             )
+            bare_build_version = parse_appdesc(appdesc)
+            if not bare_build_version:
+                raise InvalidInpHeaderError("Unable to extract BARE_BUILD_VERSION")
             print(f"INP file appdesc: {appdesc}")
 
             compressed_payload_bytes = f.read()
-            return sysname, header_bytes, compressed_payload_bytes, ver_maj, ver_min
+            return (
+                bare_build_version,
+                sysname,
+                header_bytes,
+                compressed_payload_bytes,
+                inp_ver_maj,
+                inp_ver_min,
+            )
     except (OSError, UnicodeDecodeError, InvalidInpHeaderError) as e:
         print(f"Could not open and parse INP file at '{input_file_path}': {e}")
 
     return None
 
 
-def get_iptprt_ref(iptprt_ref_path, sysname):
+def load_ports_ref(ports_ref_path, sysname):
     """
     Try to load an input port reference file from a file system path.
 
@@ -154,7 +198,7 @@ def get_iptprt_ref(iptprt_ref_path, sysname):
     mame_build = None
     mame_config = None
     try:
-        with gzip.open(iptprt_ref_path, "rb") as f:
+        with gzip.open(ports_ref_path, "rb") as f:
             maybe_mame_info = json.loads(next(f))
             if (
                 "mame_build" in maybe_mame_info
@@ -177,13 +221,48 @@ def get_iptprt_ref(iptprt_ref_path, sysname):
     except UnicodeDecodeError:
         print("Failed to unicode decode line")
     except (json.JSONDecodeError, StopIteration):
-        print(f"Failed to parse input port reference data at '{iptprt_ref_path}'")
+        print(f"Failed to parse input port reference data at '{ports_ref_path}'")
     else:
         raise UnsupportedGameError(
-            f"Could not find sysname/machine {sysname} in input port reference data at '{iptprt_ref_path}'"
+            f"Could not find sysname/machine {sysname} in input port reference data at '{ports_ref_path}'"
         )
 
     return None
+
+
+def sort_ports_ref(ports_ref, mame_version):
+    """
+    Try to sort the input port ref dict according to the given MAME version.
+
+    On success, return the a new input port ref dict with its key-value-pairs
+    (input ports) sorted according to the given MAME version.
+
+    On failure, raise either UnsupportedMameVersionError or KeyError.
+    The first case occurs only with MAME version 0.175, as ports' order was
+    unspecified with that version. The second case indicates that `ports_ref`
+    contained insufficient data required for the detected sorting order.
+    """
+    # In MAME < 0.175, ports were ordered within INP files according to order
+    # of insertion into a list in memory.
+    # In MAME == 0.175, ports' order was unspecified and varied across platforms/compilers.
+    # See https://github.com/mamedev/mame/commit/d705e4a28d49b9eeeadc9c019a12cf580ae5ee8f
+    #
+    # In MAME >= 0.176 (up to and including the current version at the time of
+    # writing, which is 0.249), ports are ordered lexicographically by tag.
+    # See https://github.com/mamedev/mame/commit/ef22943d0161be210b7c0ef057fa6954fdfe1993
+    if mame_version == "0.175":
+        raise UnsupportedMameVersionError(mame_version)
+    if mame_version < "0.175":
+
+        def ports_ref_sort_key(item):
+            return item[1]["legacy_order"]
+
+    else:
+
+        def ports_ref_sort_key(item):
+            return item
+
+    return dict(sorted(ports_ref.items(), key=ports_ref_sort_key))
 
 
 def read_next_frame_metadata(data):
@@ -269,6 +348,34 @@ def read_next_frame_analog_inputs(data, ports_count):
     return True  # placeholder
 
 
+def calc_player_count(ports_ref):
+    """For the input port reference of one game, return the player count."""
+    player_indexes = set()
+    for ports in ports_ref.values():
+        for aux in ports["fields"].values():
+            if aux.get("player") is not None:
+                player_indexes.add(aux.get("player"))
+    return len(player_indexes)
+
+
+def read_next_frame_mameplus_custom_inputs(data, player_count):
+    """
+    Read extra, custom ports of INP files of MAME Plus based forks.
+
+    MAME forks ShmupMAME and MAME Plus (the former was based on the latter)
+    added generic extra ports (one per player) for "custom buttons" after the
+    driver-specific ports. Take those into account by skipping them, so that we
+    can correctly traverse INP files created by these forks.
+    """
+    # We could detect these button inputs too, but there might not be that many
+    # occasions where this would actually be useful, so for now, it is left as
+    # an exercise for the reader.
+    for _ in range(player_count):
+        data.read(DIGITAL_STRUCT_SIZE)
+
+    return True  # placeholder
+
+
 # pylint: disable=unused-argument
 def check_digital_inputs(ports_ref, button_inputs_def, button_inputs_digital, port_idx):
     """
@@ -281,7 +388,7 @@ def check_digital_inputs(ports_ref, button_inputs_def, button_inputs_digital, po
     pressed_buttons = []
     # We made sure in main() that ports to check are within ports_ref:
     key = list(ports_ref)[port_idx]
-    fields = ports_ref[key]
+    fields = ports_ref[key]["fields"]
     for mask, aux in fields.items():
         mask = int(mask, base=10)  # sic
         # Concerning ACTIVE_HIGH vs. ACTIVE_LOW fields, we do not need to
@@ -294,7 +401,7 @@ def check_digital_inputs(ports_ref, button_inputs_def, button_inputs_digital, po
     return pressed_buttons
 
 
-def iter_inp_payload(ports_ref, inp_data, ports_to_check=None):
+def iter_inp_payload(ports_ref, inp_data, ports_to_check=None, shmupmame_compat=False):
     """
     Convert an INP file payload into one list of pressed buttons per frame.
 
@@ -310,10 +417,11 @@ def iter_inp_payload(ports_ref, inp_data, ports_to_check=None):
     output = []
     frame_no = 0
     ports_count = len(ports_ref)
+    player_count = calc_player_count(ports_ref)
 
     analog_fields_count = 0
     for p in ports_ref.values():
-        analog_fields_count += sum(1 for x in p.values() if x["analog"])
+        analog_fields_count += sum(1 for x in p["fields"].values() if x["analog"])
 
     if ports_to_check is None:
         ports_to_check = range(ports_count)
@@ -338,6 +446,9 @@ def iter_inp_payload(ports_ref, inp_data, ports_to_check=None):
         if analog_inputs is None:
             break
 
+        if shmupmame_compat:
+            read_next_frame_mameplus_custom_inputs(inp_data, player_count)
+
         next_frame_output = {
             "f": frame_no,
             "s": seconds,
@@ -357,12 +468,12 @@ def iter_inp_payload(ports_ref, inp_data, ports_to_check=None):
     return output
 
 
-def print_ports(iptprt_ref):
-    """Pretty-print information about available input ports to stdout."""
+def print_ports(ports_ref):
+    """Pretty-print information about the assumed input ports to stdout."""
     idx = 0
-    for port_name, fields in iptprt_ref.items():
+    for port_name, port in ports_ref.items():
         print(f"{idx} {port_name}")
-        for mask, field in fields.items():
+        for mask, field in port["fields"].items():
             ft = field["type"]
             sn = f" ({field['specific_name']})" if field.get("specific_name") else ""
             pl = (
@@ -387,33 +498,49 @@ def main(_args):
         print("Fatal: no INP file", file=sys.stderr)
         return 1
 
-    sysname, header_bytes, compressed_payload_bytes = parsed_inp_file[:3]
+    mame_version, sysname, header_bytes, compressed_payload_bytes = parsed_inp_file[:4]
 
     print(f"Looking up input port reference data for game '{sysname}' ...")
     try:
-        iptprt_ref = get_iptprt_ref(_args.inputport_ref_path, sysname)
+        ports_ref = load_ports_ref(_args.inputport_ref_path, sysname)
     except UnsupportedGameError as e:
         print(f"Fatal: game '{sysname}' is not supported: {e}", file=sys.stderr)
         return 1
 
-    if not iptprt_ref:
+    if not ports_ref:
         print(
             f"Fatal: could not load input port reference file '{_args.inputport_ref_path}'",
             file=sys.stderr,
         )
         return 1
 
-    iptprt_ref, mame_build, mame_config = iptprt_ref
+    ports_ref, mame_build, mame_config = ports_ref
+    try:
+        ports_ref = sort_ports_ref(ports_ref, mame_version)
+    except UnsupportedMameVersionError as e:
+        print(
+            f"Fatal: given INP file has been recorded using MAME version {e}, "
+            "the only version explicitly not supported by inp2json",
+            file=sys.stderr,
+        )
+        return 1
+    except KeyError:
+        print(
+            f"Fatal: input port reference: missing legacy sort order for game '{sysname}'",
+            file=sys.stderr,
+        )
+        return 1
+
     print(f"Input port reference: {mame_build=} {mame_config=}")
 
     if _args.list_ports:
-        print_ports(iptprt_ref)
+        print_ports(ports_ref)
         return 0
 
     if (
         _args.check_ports is not None
     ):  # None is default; checks all available ports. Will be a list otherwise.
-        ports_count = len(iptprt_ref)
+        ports_count = len(ports_ref)
         for check_port in _args.check_ports:
             if not 0 <= check_port <= ports_count - 1:
                 print(
@@ -437,7 +564,9 @@ def main(_args):
             return 1
 
     print("Iterating over INP file payload ...")
-    output = iter_inp_payload(iptprt_ref, inp_data, _args.check_ports)
+    output = iter_inp_payload(
+        ports_ref, inp_data, _args.check_ports, _args.shmupmame_compat
+    )
 
     print("Writing JSON...")
     out_path = f"{_args.input_file_path}.json"
