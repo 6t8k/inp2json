@@ -38,12 +38,20 @@ DIGITAL_STRUCT_SIZE = struct.calcsize(DIGITAL_STRUCT_FMT)
 ANALOG_STRUCT_SIZE = struct.calcsize(ANALOG_STRUCT_FMT)
 
 
+class InpHeaderError(Exception):
+    """This exception is raised when an INP file header could not be parsed or has been detected as invalid."""
+
+
+class InpPayloadSanityCheckError(Exception):
+    """This exception is raised when an invalid INP payload has been detected via a sanity check."""
+
+
+class UnexpectedInpPayloadEndError(Exception):
+    """This exception is raised when an INP payload ends unexpectedly."""
+
+
 class UnsupportedGameError(Exception):
-    """This exception is raised when inp2json has determined that it does not support a given game."""
-
-
-class InvalidInpHeaderError(Exception):
-    """This exception is raised when an INP file header could not be parsed or was detected as invalid."""
+    """This exception is raised when it has been determined that a given game is unsupported."""
 
 
 class UnsupportedMameVersionError(Exception):
@@ -132,7 +140,7 @@ def parse_header(input_file_path):
                 or len(header_bytes) < HEADER_BYTES
                 or not header_bytes[:8] == b"MAMEINP\0"
             ):
-                raise InvalidInpHeaderError("Not a MAME INP file")
+                raise InpHeaderError("Not a MAME INP file")
 
             basetime = int.from_bytes(
                 header_bytes[OFFS_BASETIME : OFFS_BASETIME + BASETIME_BYTES], "little"
@@ -146,7 +154,7 @@ def parse_header(input_file_path):
             inp_ver_maj = int(header_bytes[OFFS_MAJVERSION])
             inp_ver_min = int(header_bytes[OFFS_MINVERSION])
             if inp_ver_maj != 3 or inp_ver_min not in (0, 5):
-                raise InvalidInpHeaderError(
+                raise InpHeaderError(
                     f"Invalid INP version: {inp_ver_maj}.{inp_ver_min}"
                 )
 
@@ -164,7 +172,7 @@ def parse_header(input_file_path):
             )
             bare_build_version = parse_appdesc(appdesc)
             if not bare_build_version:
-                raise InvalidInpHeaderError("Unable to extract BARE_BUILD_VERSION")
+                raise InpHeaderError("Unable to extract BARE_BUILD_VERSION")
             print(f"INP file appdesc: {appdesc}")
 
             compressed_payload_bytes = f.read()
@@ -176,7 +184,7 @@ def parse_header(input_file_path):
                 inp_ver_maj,
                 inp_ver_min,
             )
-    except (OSError, UnicodeDecodeError, InvalidInpHeaderError) as e:
+    except (OSError, UnicodeDecodeError, InpHeaderError) as e:
         print(f"Could not open and parse INP file at '{input_file_path}': {e}")
 
     return None
@@ -279,16 +287,14 @@ def read_next_frame_metadata(data):
     """
     next_data = data.read(FRAME_STRUCT_SIZE)
     if not next_data:
-        # Expected end of an INP file payload. If we can't read enough bytes at
-        # at any other point, it looks like the payload is truncated/malformed.
         return None
 
     try:
         return struct.unpack(FRAME_STRUCT_FMT, next_data)
     except struct.error as e:
-        print(f"Error when reading next frame metadata: {e}", file=sys.stderr)
-
-    return None
+        raise UnexpectedInpPayloadEndError(
+            f"Error when reading next frame metadata: {e}"
+        ) from e
 
 
 def read_next_frame_digital_inputs(data, ports_count):
@@ -312,8 +318,9 @@ def read_next_frame_digital_inputs(data, ports_count):
         try:
             defvalue, digital = struct.unpack(DIGITAL_STRUCT_FMT, next_data)
         except struct.error as e:
-            print(f"Error when reading next digital input data: {e}", file=sys.stderr)
-            return None
+            raise UnexpectedInpPayloadEndError(
+                f"Error when reading next digital input data: {e}"
+            ) from e
 
         ports_def[i] = defvalue
         ports_digital[i] = digital
@@ -342,8 +349,9 @@ def read_next_frame_analog_inputs(data, ports_count):
         try:
             struct.unpack(ANALOG_STRUCT_FMT, next_data)
         except struct.error as e:
-            print(f"Error when reading next analog input data: {e}", file=sys.stderr)
-            return None
+            raise UnexpectedInpPayloadEndError(
+                f"Error when reading next analog input data: {e}"
+            ) from e
 
     return True  # placeholder
 
@@ -401,6 +409,20 @@ def check_digital_inputs(ports_ref, button_inputs_def, button_inputs_digital, po
     return pressed_buttons
 
 
+def frame_timestamp_regress(
+    seconds_cur, attoseconds_cur, seconds_prev, attoseconds_prev
+):
+    """
+    Check if the compound value of the current frame timestamp regressed.
+
+    Return True if the current frame timestamp has a lower compound value than
+    the previous one, else return False.
+    """
+    return seconds_cur < seconds_prev or (
+        attoseconds_cur < attoseconds_prev and seconds_cur == seconds_prev
+    )
+
+
 def iter_inp_payload(ports_ref, inp_data, ports_to_check=None, shmupmame_compat=False):
     """
     Convert an INP file payload into one list of pressed buttons per frame.
@@ -416,6 +438,7 @@ def iter_inp_payload(ports_ref, inp_data, ports_to_check=None, shmupmame_compat=
     """
     output = []
     frame_no = 0
+    seconds_cur = attoseconds_cur = 0
     ports_count = len(ports_ref)
     player_count = calc_player_count(ports_ref)
 
@@ -431,28 +454,39 @@ def iter_inp_payload(ports_ref, inp_data, ports_to_check=None, shmupmame_compat=
 
         metadata = read_next_frame_metadata(inp_data)
         if metadata is None:
+            # Expected end of an INP file payload.
+            print("END OF REPLAY")
             break
-        seconds, attoseconds, curspeed = metadata
 
-        print(f"Frame #{frame_no} {seconds} {attoseconds} {curspeed}")
+        seconds_prev = seconds_cur
+        attoseconds_prev = attoseconds_cur
+        seconds_cur, attoseconds_cur, curspeed = metadata
+        if frame_timestamp_regress(
+            seconds_cur, attoseconds_cur, seconds_prev, attoseconds_prev
+        ):
+            # We should be able to assume that the sequence of frame timestamps
+            # encountered when traversing any well-formed INP file from
+            # beginning to end increases monotonically. In practice, if it
+            # doesn't, then this is a clue that the expected payload format
+            # does not coincide with the actual format: we are likely
+            # misinterpreting the data, generating garbled output, so stop if
+            # we see this.
+            raise InpPayloadSanityCheckError("Bumped into frame timestamp decrease")
+
+        print(f"Frame #{frame_no} {seconds_cur} {attoseconds_cur} {curspeed}")
 
         digital_inputs = read_next_frame_digital_inputs(inp_data, ports_count)
-        if digital_inputs is None:
-            break
-
         button_inputs_def, button_inputs_digital = digital_inputs
 
-        analog_inputs = read_next_frame_analog_inputs(inp_data, analog_fields_count)
-        if analog_inputs is None:
-            break
+        read_next_frame_analog_inputs(inp_data, analog_fields_count)
 
         if shmupmame_compat:
             read_next_frame_mameplus_custom_inputs(inp_data, player_count)
 
         next_frame_output = {
             "f": frame_no,
-            "s": seconds,
-            "as": attoseconds,
+            "s": seconds_cur,
+            "as": attoseconds_cur,
             "cs": curspeed,
             "p": {},
         }
@@ -464,7 +498,6 @@ def iter_inp_payload(ports_ref, inp_data, ports_to_check=None, shmupmame_compat=
 
         output.append(next_frame_output)
 
-    print("END OF REPLAY")
     return output
 
 
@@ -564,9 +597,23 @@ def main(_args):
             return 1
 
     print("Iterating over INP file payload ...")
-    output = iter_inp_payload(
-        ports_ref, inp_data, _args.check_ports, _args.shmupmame_compat
-    )
+    try:
+        output = iter_inp_payload(
+            ports_ref, inp_data, _args.check_ports, _args.shmupmame_compat
+        )
+    except InpPayloadSanityCheckError as e:
+        print(
+            f"INP payload sanity check failed: '{e}' - stopping processing. "
+            "If the INP file has been created using ShmupMAME, please try the "
+            "'-s' command line option. If this is not the case or '-s' does "
+            "not help, please read the limitations section in README.md "
+            "and/or report a bug.",
+            file=sys.stderr,
+        )
+        return 1
+    except UnexpectedInpPayloadEndError as e:
+        print(f"INP payload ended unexpectedly: {e}", file=sys.stderr)
+        # We still output what we have so far
 
     print("Writing JSON...")
     out_path = f"{_args.input_file_path}.json"
