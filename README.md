@@ -4,15 +4,15 @@ This is a small Python script that takes a MAME input recording ("INP file") and
 
 This should make the data easier to read/process further for various purpuses, like a custom input viewer. This can come in handy in situations where such a thing is not available out of the box or does not have the desirable features.
 
-I have tested this with shmupmame 4.2 and current (Wolf)MAME versions. Basically, it should work with anything that records version 3.0 or 3.5 INP files, but note the [#Limitations](#limitations).
+I have tested this with shmupmame 4.2 and current (Wolf)MAME versions. Basically, it should work with anything that records version 3.0 or 3.5 INP files, but note the [limitations](#limitations).
 
 You need Python 3.6 or later, there are no other dependencies.
 
 ## Basic usage
 
-```inp2json.py -i PATH_TO_INP_FILE```
+```inp2json.py -i INPUT_FILE_PATH```
 
-The JSON is then written to `PATH_TO_INP_FILE.json`.
+The JSON is then written to `INPUT_FILE_PATH.json`.
 
 `inp2json.py` must be able to read the input port reference file [(`mame_inputport_ref.gz`)](mame_inputport_ref.gz).
 
@@ -55,7 +55,7 @@ The format of INP files is game-dependent and not self-contained, so in order to
 However, the format in some cases also varies across MAME versions in a way that inp2json will probably never account for out of the box. Most INP files in practical scenarios should be correctly converted out of the box, but depending on the game and MAME version the INP file was created with, there is a non-negligible chance that it may be unsuccessful (the probability raises with the version's age, as a rule of thumb). If this occurs to you, there are still options/ideas (it may not be easy to distinguish from a bug, feel free to file an issue if you'd like me to rule this out):
 
 - check which MAME version your INP file was created with (for this you can simply open it using a text or hex editor) and
-    - which game your INP file is for, then look up the input definitions (e.g. [here](https://github.com/mamedev/mame/blob/mame0249/src/mame/handheld/hh_tms1k.cpp#L14654) for `0.249` and `ssports4`, for which ports have changed in [84395f1](https://github.com/mamedev/mame/commit/84395f11085373b474a8b8a5caafc3f1e38ceb5b)). Revert `inp2json` to commit `5442e48` and manually adjust `BUTTONS` and `--ports-count` accordingly
+    - which game your INP file is for, then look up the input definitions (e.g. [here](https://github.com/mamedev/mame/blob/mame0249/src/mame/handheld/hh_tms1k.cpp#L14654) for `0.249` and `ssports4`, for which ports have changed in [0.250](https://github.com/mamedev/mame/blob/mame0250/src/mame/handheld/hh_tms1k.cpp#L14822)). Revert `inp2json` to commit `5442e48` and manually adjust `BUTTONS` and `--ports-count` accordingly
     - (OR) obtain a MAME executable of that version and see if you can utilize [MAME's Lua engine](https://docs.mamedev.org/techspecs/luaengine.html) to convert the inputs (the respective game needs to be running for this, at least at the time of writing)
     - (OR) rebase the [`inp2json` branch](https://github.com/6t8k/mame/tree/inp2json) onto the corresponding tag instead and continue [generating the input port reference file](#generating-the-input-port-reference-file) from there (might be too much of a hassle depending on how far you'd need to go back)
 
